@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from auth import router as auth_router
 from geo import router as geo_router
@@ -15,26 +16,61 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
+# ── CORS ──────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:8080",
+        "http://127.0.0.1:8080",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:80",
+        "http://127.0.0.1:80",
+        "https://lms-fork.vercel.app",
     ],
+    allow_origin_regex=r"^(https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+)(:\d+)?|https://.*\.vercel\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    import logging
+    logging.exception(f"Unhandled error on {request.url.path}: {exc}")
+    exc_str = str(exc)
+    if "OperationalError" in type(exc).__name__ or "tenant" in exc_str or "connection" in exc_str.lower() or "translate host name" in exc_str:
+        detail = "Database connection failed. Please check if your Supabase project is active and unpaused."
+    else:
+        detail = "An internal server error occurred."
+
+    response = JSONResponse(status_code=500, content={"detail": detail})
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
 # ── Routers ───────────────────────────────────────────────────────────────────
-app.include_router(auth_router.router)
-app.include_router(geo_router.router)
-app.include_router(plots_router.router)
-app.include_router(documents_router.router)
-app.include_router(ai_router.router)
-app.include_router(routing_router.router)
+routers = [
+    auth_router.router,
+    geo_router.router,
+    plots_router.router,
+    documents_router.router,
+    ai_router.router,
+    routing_router.router,
+]
+
+for r in routers:
+    app.include_router(r, prefix="/api")
 
 
 @app.get("/")
+@app.get("/api")
+@app.get("/api/")
 def read_root():
     return {"message": "LPMS API Gateway is running"}

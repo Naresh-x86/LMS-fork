@@ -14,12 +14,23 @@ import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { getPlots, getPlot } from '../api/plots'
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png'
+import markerIcon from 'leaflet/dist/images/marker-icon.png'
+import markerShadow from 'leaflet/dist/images/marker-shadow.png'
+
+// Fix Leaflet default icon paths in Vite bundled environments
+delete L.Icon.Default.prototype._getIconUrl
+L.Icon.Default.mergeOptions({
+  iconUrl: markerIcon,
+  iconRetinaUrl: markerIcon2x,
+  shadowUrl: markerShadow,
+})
+import { getPlots, getPlot, getPlotKmlUrl } from '../api/plots'
 import { getDocumentUrl } from '../api/documents'
-import { getNodeByName, getCountries, getChildren } from '../api/geo'
+import { getNodeByName, getCountries, getChildren, getNode } from '../api/geo'
 import { geocodeAddress, getRoute, getNearbyPlaces } from '../api/routing'
 import Header from '../components/Header'
-import { Search, ChevronDown, ChevronUp, X, FileText, Download, Eye, ChevronRight, MapPin, Navigation, ArrowLeftRight, Map as MapIcon, Clock, Car, Bike, Footprints } from 'lucide-react'
+import { Search, ChevronDown, ChevronUp, X, FileText, Download, Eye, ChevronRight, MapPin, Navigation, ArrowLeftRight, Map as MapIcon, Clock, Car, Bike, Footprints, Pin, PinOff, Folder, Ruler } from 'lucide-react'
 
 // Unit conversion constants
 const AREA_UNITS = ['sqm', 'sqft', 'acres', 'hectares']
@@ -38,9 +49,31 @@ function convertAreaValue(val, fromUnit, toUnit) {
 }
 
 const DOC_CATEGORIES = {
-  land_documents: ['DEED', 'PARENT_DOCUMENT', 'FMB', 'PATTA', 'EC_DETAILS'],
+  land_documents: ['DEED', 'PARENT_DOCUMENT', 'FMB', 'PATTA', 'EC_DETAILS', 'ADANGAL', 'A_REGISTER'],
+  land_official_details: ['PROPERTY_TAX', 'AERIAL_PHOTO', 'DISPUTE_DETAILS', 'APPROVED_PLAN'],
   buildup_details: ['BUILDING_PLAN', 'PLAN_APPROVAL', 'BUILDING_PERMIT'],
-  others: ['PROPERTY_TAX', 'AERIAL_PHOTO', 'DISPUTE_DETAILS']
+  source_files: ['SOURCE_KML', 'KML', 'SHAPEFILE'],
+  others: ['PROPERTY_TAX', 'AERIAL_PHOTO', 'DISPUTE_DETAILS', 'APPROVED_PLAN']
+}
+
+const DOC_TITLES = {
+  DEED: 'Deed Document',
+  PARENT_DOCUMENT: 'Parent Document',
+  FMB: 'TSLR Sketch',
+  PATTA: 'Patta / Chitta Details',
+  EC_DETAILS: 'EC Details',
+  BUILDING_PLAN: 'Building Plan',
+  PLAN_APPROVAL: 'Plan Approval Letter',
+  BUILDING_PERMIT: 'Building Permit Letter',
+  PROPERTY_TAX: 'Property Tax',
+  AERIAL_PHOTO: 'Aerial / Field Photos',
+  DISPUTE_DETAILS: 'Dispute Details',
+  ADANGAL: 'Adangal',
+  A_REGISTER: 'A-Register',
+  APPROVED_PLAN: 'Approved Industry / Residential Plan',
+  SOURCE_KML: 'KML File',
+  KML: 'KML File',
+  SHAPEFILE: 'Shapefile'
 }
 
 // Coordinates and view constants
@@ -49,6 +82,24 @@ const INDIA_VIEW = { center: [22.5, 79.5], zoom: 5.5 }
 const TN_VIEW = { center: [11.12, 78.65], zoom: 7.8 }
 
 // Coimbatore district approximate bounds [SW, NE]
+// Area calculation for polygon based on earth radius
+function calculateArea(latLngs) {
+  let area = 0
+  const d2r = Math.PI / 180
+  const earthRadius = 6378137 // meters
+  
+  if (latLngs.length > 2) {
+    for (let i = 0; i < latLngs.length; i++) {
+      let p1 = latLngs[i]
+      let p2 = latLngs[(i + 1) % latLngs.length]
+      
+      area += (p2.lng - p1.lng) * d2r * (2 + Math.sin(p1.lat * d2r) + Math.sin(p2.lat * d2r))
+    }
+    area = area * earthRadius * earthRadius / 2.0
+  }
+  return Math.abs(area)
+}
+
 const CBE_BOUNDS = L.latLngBounds(
   L.latLng(10.85, 76.85),
   L.latLng(11.25, 77.25)
@@ -74,6 +125,65 @@ const TN_DISTRICTS = [
   'Tirupathur', 'Tiruppur', 'Tiruvallur', 'Tiruvannamalai', 'Tiruvarur',
   'Vellore', 'Villupuram', 'Virudhunagar',
 ]
+
+const CBE_VILLAGES = [
+  'Bogampatti',
+  'Madukkarai',
+  'Singanallur',
+  'Coimbatore North',
+  'Annur',
+  'Chettipalayam',
+  'Irugur',
+  'Kalapatti',
+  'Karamadai',
+  'Kinathukadavu',
+  'Kottur',
+  'Malumichampatti',
+  'Narasimhanaickenpalayam',
+  'Othakkalmandapam',
+  'Perur',
+  'Pollachi',
+  'Saravanampatti',
+  'Sulur',
+  'Thondamuthur',
+  'Valparai',
+  'Vedapatti',
+]
+
+const VILLAGE_COORDS = {
+  'Bogampatti': { center: [10.8972, 77.0884], zoom: 15 },
+  'Madukkarai': { center: [10.8995, 76.9445], zoom: 15 },
+  'Singanallur': { center: [11.0092, 77.0446], zoom: 15 },
+  'Coimbatore North': { center: [11.0250, 76.9500], zoom: 15 },
+}
+
+const CBE_TALUKS = [
+  'Coimbatore South',
+  'Coimbatore North',
+  'Perur',
+  'Madukkarai',
+  'Sulur',
+  'Annur',
+  'Mettupalayam',
+  'Pollachi',
+  'Kinathukadavu',
+  'Valparai',
+  'Anaimalai',
+]
+
+const TALUK_COORDS = {
+  'Coimbatore South': { center: [10.9950, 76.9600], zoom: 13 },
+  'Coimbatore North': { center: [11.0250, 76.9500], zoom: 13 },
+  'Perur': { center: [10.9700, 76.9100], zoom: 13 },
+  'Madukkarai': { center: [10.8995, 76.9445], zoom: 13 },
+  'Sulur': { center: [11.0280, 77.1260], zoom: 13 },
+  'Annur': { center: [11.2330, 77.1800], zoom: 13 },
+  'Mettupalayam': { center: [11.3000, 76.9400], zoom: 13 },
+  'Pollachi': { center: [10.6600, 77.0100], zoom: 13 },
+  'Kinathukadavu': { center: [10.8200, 77.0200], zoom: 13 },
+  'Valparai': { center: [10.3250, 76.9550], zoom: 13 },
+  'Anaimalai': { center: [10.5850, 76.9300], zoom: 13 },
+}
 
 const PARCEL_STYLE = {
   color: '#2563eb',
@@ -106,20 +216,82 @@ export default function MapPage() {
   const satelliteGroupRef = useRef(null)
   const layersRef = useRef([]) // { layer, plot, labelMarker }
   const selectedLayerRef = useRef(null)
+  const selectedPlotRef = useRef(null)
 
   const [plots, setPlots] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [selectedPlot, setSelectedPlot] = useState(null)
+  const [activeNode, setActiveNode] = useState(null)
   const [pdfModal, setPdfModal] = useState(null) // { url, docType }
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [pinnedPos, setPinnedPos] = useState({ x: 0, y: 0 })
+  const [activeBasemap, setActiveBasemap] = useState('Satellite')
+  const [isPinned, setIsPinned] = useState(true)
+  const [floatingPos, setFloatingPos] = useState({ x: 80, y: 120 })
+  const [isDragging, setIsDragging] = useState(false)
+  const dragRef = useRef({ startX: 0, startY: 0, initialLeft: 0, initialTop: 0 })
+  const panelRef = useRef(null)
+  const flyToSafetyTimerRef = useRef(null)
 
   // Selection flow states
   const [currentStep, setCurrentStep] = useState(districtId ? 'READY' : 'REGION')
   const [isBlurOverlayVisible, setIsBlurOverlayVisible] = useState(!districtId)
   const [selectedState, setSelectedState] = useState('Tamil Nadu')
   const [selectedDistrict, setSelectedDistrict] = useState('Coimbatore')
+  const [selectedDistrictNode, setSelectedDistrictNode] = useState(null)
+  const [selectedTaluk, setSelectedTaluk] = useState('')
+  const [selectedTalukNode, setSelectedTalukNode] = useState(null)
+  const [selectedVillage, setSelectedVillage] = useState('')
+  const [selectedVillageNode, setSelectedVillageNode] = useState(null)
+  const [taluksList, setTaluksList] = useState([])
+  const [villagesList, setVillagesList] = useState([])
   const [activeDistrictId, setActiveDistrictId] = useState(districtId || null)
+  
+  const [isMeasureMode, setIsMeasureMode] = useState(false)
+  const measureModeRef = useRef(isMeasureMode)
+  
+  const [isGlobalMeasure, setIsGlobalMeasure] = useState(false)
+  const [isFreehandMeasure, setIsFreehandMeasure] = useState(false)
+  const [globalAreaUnit, setGlobalAreaUnit] = useState('sqm')
+  
+  const POLYGON_COLORS = ['#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#8b5cf6', '#ef4444', '#14b8a6']
+  
+  const globalMeasureModeRef = useRef(isGlobalMeasure)
+  const freehandMeasureModeRef = useRef(isFreehandMeasure)
+  const globalAreaUnitRef = useRef(globalAreaUnit)
+  const isDrawingFreehandRef = useRef(false)
+  
+  const globalPolygonsRef = useRef([]) // Store finalized polygons { points, color }
+  const globalMeasurePointsRef = useRef([])
+  const globalMeasureLayerRef = useRef(null)
+  
+  const [measureRenderTrigger, setMeasureRenderTrigger] = useState(0)
+  
+  useEffect(() => {
+    measureModeRef.current = isMeasureMode
+  }, [isMeasureMode])
+
+  useEffect(() => {
+    globalMeasureModeRef.current = isGlobalMeasure
+    freehandMeasureModeRef.current = isFreehandMeasure
+    
+    // Toggle map dragging for freehand
+    if (mapInstanceRef.current) {
+      if (isGlobalMeasure && isFreehandMeasure) {
+        mapInstanceRef.current.dragging.disable()
+      } else {
+        mapInstanceRef.current.dragging.enable()
+      }
+    }
+  }, [isGlobalMeasure, isFreehandMeasure])
+
+  useEffect(() => {
+    globalAreaUnitRef.current = globalAreaUnit
+    if (mapInstanceRef.current && globalMeasureModeRef.current) {
+      updateGlobalMeasurePolygon(mapInstanceRef.current)
+    }
+  }, [globalAreaUnit])
 
   const [countries, setCountries] = useState([])
   const [states, setStates] = useState([])
@@ -145,11 +317,25 @@ export default function MapPage() {
   const [travelMode, setTravelMode] = useState('driving')
   const [routeError, setRouteError] = useState('')
   const routeLayerRef = useRef(null)
+  const distanceLineRef = useRef(null)
+  const distanceMarkerRef = useRef(null)
 
   const [geocodeResults, setGeocodeResults] = useState([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [isGeocoding, setIsGeocoding] = useState(false)
   const [selectedDestCoords, setSelectedDestCoords] = useState(null)
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        if (selectedLayerRef.current) {
+          handleClosePanel()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   const [nearbyCategory, setNearbyCategory] = useState('')
   const [nearbyPlaces, setNearbyPlaces] = useState([])
@@ -159,6 +345,82 @@ export default function MapPage() {
   const [nearbyRadius, setNearbyRadius] = useState(2000)
   const nearbyLayerRef = useRef(null)
 
+  // Document Folder State
+  const [expandedFolders, setExpandedFolders] = useState({})
+
+  const toggleFolder = (docType) => {
+    setExpandedFolders(prev => ({ ...prev, [docType]: !prev[docType] }))
+  }
+
+  const getOriginalFilename = (storageKey, docType, isDefaultKml = false) => {
+    if (isDefaultKml) {
+      return `${selectedPlot?.plot_number || 'parcel'}_boundary.kml`
+    }
+    if (!storageKey) return 'Document';
+    const parts = storageKey.split('/');
+    const fileWithPrefix = parts[parts.length - 1];
+    return fileWithPrefix.replace(/^[A-Za-z0-9_]+?_\d+_/, '');
+  }
+
+  const updateGlobalMeasurePolygon = (map) => {
+    if (globalMeasureLayerRef.current) {
+      map.removeLayer(globalMeasureLayerRef.current)
+      globalMeasureLayerRef.current = null
+    }
+    
+    const layers = []
+    
+    // Draw finalized polygons
+    globalPolygonsRef.current.forEach(poly => {
+      const polygon = L.polygon(poly.points, { color: poly.color, weight: 3, fillColor: poly.color, fillOpacity: 0.35 })
+      const areaSqm = calculateArea(poly.points)
+      const unit = globalAreaUnitRef.current
+      let areaStr = ''
+      if (unit === 'sqm') areaStr = Math.round(areaSqm).toLocaleString() + ' sq m'
+      else if (unit === 'hectares') areaStr = (areaSqm / 10000).toFixed(3) + ' ha'
+      else if (unit === 'acres') areaStr = (areaSqm * 0.000247105).toFixed(3) + ' acres'
+      else if (unit === 'sqft') areaStr = Math.round(areaSqm * 10.7639).toLocaleString() + ' sq ft'
+      
+      polygon.bindTooltip(`Area: ${areaStr}`, { permanent: true, direction: 'center', className: 'area-tooltip' })
+      layers.push(polygon)
+    })
+    
+    // Draw currently drawing points
+    const pts = globalMeasurePointsRef.current
+    if (pts.length > 0) {
+      const activeColor = POLYGON_COLORS[globalPolygonsRef.current.length % POLYGON_COLORS.length]
+      
+      pts.forEach(pt => {
+        if (!freehandMeasureModeRef.current) {
+          layers.push(L.circleMarker(pt, { radius: 5, color: activeColor, fillColor: '#fff', fillOpacity: 1, weight: 2 }))
+        }
+      })
+      
+      if (pts.length === 2) {
+        layers.push(L.polyline(pts, { color: activeColor, weight: 4, dashArray: freehandMeasureModeRef.current ? '' : '5 5' }))
+      } else if (pts.length > 2) {
+        const polygon = L.polygon(pts, { color: activeColor, weight: 3, fillColor: activeColor, fillOpacity: 0.35 })
+        
+        const areaSqm = calculateArea(pts)
+        const unit = globalAreaUnitRef.current
+        let areaStr = ''
+        if (unit === 'sqm') areaStr = Math.round(areaSqm).toLocaleString() + ' sq m'
+        else if (unit === 'hectares') areaStr = (areaSqm / 10000).toFixed(3) + ' ha'
+        else if (unit === 'acres') areaStr = (areaSqm * 0.000247105).toFixed(3) + ' acres'
+        else if (unit === 'sqft') areaStr = Math.round(areaSqm * 10.7639).toLocaleString() + ' sq ft'
+        
+        polygon.bindTooltip(`Area: ${areaStr}`, { permanent: true, direction: 'center', className: 'area-tooltip' })
+        layers.push(polygon)
+      }
+    }
+    
+    if (layers.length > 0) {
+      const group = L.featureGroup(layers)
+      group.addTo(map)
+      globalMeasureLayerRef.current = group
+    }
+  }
+
   const clearRouteAndNearby = () => {
     if (routeLayerRef.current) {
       mapInstanceRef.current?.removeLayer(routeLayerRef.current)
@@ -167,6 +429,14 @@ export default function MapPage() {
     if (nearbyLayerRef.current) {
       mapInstanceRef.current?.removeLayer(nearbyLayerRef.current)
       nearbyLayerRef.current = null
+    }
+    if (distanceLineRef.current) {
+      mapInstanceRef.current?.removeLayer(distanceLineRef.current)
+      distanceLineRef.current = null
+    }
+    if (distanceMarkerRef.current) {
+      mapInstanceRef.current?.removeLayer(distanceMarkerRef.current)
+      distanceMarkerRef.current = null
     }
     setRouteData(null)
     setNearbyPlaces([])
@@ -284,8 +554,8 @@ export default function MapPage() {
   useEffect(() => {
     if (mapInstanceRef.current) return // Already initialized
 
-    const initialCenter = districtId ? CBE_BOUNDS.getCenter() : WORLD_VIEW.center
-    const initialZoom = districtId ? 11 : WORLD_VIEW.zoom
+    const initialCenter = WORLD_VIEW.center
+    const initialZoom = WORLD_VIEW.zoom
 
     const map = L.map(mapRef.current, {
       center: initialCenter,
@@ -293,7 +563,28 @@ export default function MapPage() {
       minZoom: 3.5,
       maxZoom: 22,
       zoomControl: true,
+      zoomAnimationThreshold: 8,
     })
+
+    // Monkey-patch _stop to prevent corrupted zoom animation state when flyTo or animations are interrupted
+    const originalStop = map._stop
+    map._stop = function () {
+      const wasAnimatingZoom = this._animatingZoom
+      const res = originalStop.apply(this, arguments)
+      if (wasAnimatingZoom) {
+        this._animatingZoom = false
+        if (this._mapPane) {
+          L.DomUtil.removeClass(this._mapPane, 'leaflet-zoom-anim')
+        }
+        this._resetView(this.getCenter(), this.getZoom())
+      }
+      return res
+    }
+    
+    // Create dedicated labels pane so overlay layers (places/roads) stay above tile layers
+    map.createPane('labelsPane')
+    map.getPane('labelsPane').style.zIndex = '350'
+    map.getPane('labelsPane').style.pointerEvents = 'none'
 
     // 1. Satellite Base
     const satelliteLowRes = L.tileLayer(
@@ -325,20 +616,139 @@ export default function MapPage() {
     )
 
     const baseMaps = {
-      "Default": defaultMap,
       "Satellite": satelliteGroup,
+      "Default": defaultMap,
       "Terrain": terrainMap
     }
 
-    // Default to Default Map
-    defaultMap.addTo(map)
+    // Default to Satellite Map initially
+    satelliteGroup.addTo(map)
 
     L.control.layers(baseMaps, null, { position: 'bottomright' }).addTo(map)
+
+    map.on('baselayerchange', (e) => {
+      setActiveBasemap(e.name)
+    })
+
+    map.on('mousedown', (e) => {
+      if (globalMeasureModeRef.current && freehandMeasureModeRef.current) {
+        if (e.originalEvent && e.originalEvent.preventDefault) {
+          e.originalEvent.preventDefault() // Prevents browser image dragging
+        }
+        isDrawingFreehandRef.current = true
+        globalMeasurePointsRef.current.push(e.latlng)
+        updateGlobalMeasurePolygon(map)
+      }
+    })
+
+    map.on('mousemove', (e) => {
+      if (globalMeasureModeRef.current && freehandMeasureModeRef.current && isDrawingFreehandRef.current) {
+        const pts = globalMeasurePointsRef.current
+        const lastPt = pts[pts.length - 1]
+        if (lastPt) {
+          const p1 = map.latLngToContainerPoint(lastPt)
+          const p2 = map.latLngToContainerPoint(e.latlng)
+          if ((p1.x - p2.x)**2 + (p1.y - p2.y)**2 > 16) {
+            pts.push(e.latlng)
+            updateGlobalMeasurePolygon(map)
+          }
+        }
+      }
+    })
+
+    const handleGlobalMouseUp = () => {
+      if (isDrawingFreehandRef.current) {
+        isDrawingFreehandRef.current = false
+        const pts = globalMeasurePointsRef.current
+        if (pts.length > 2) {
+          const color = POLYGON_COLORS[globalPolygonsRef.current.length % POLYGON_COLORS.length]
+          globalPolygonsRef.current.push({ points: [...pts], color })
+        }
+        globalMeasurePointsRef.current = []
+        if (mapInstanceRef.current) {
+          updateGlobalMeasurePolygon(mapInstanceRef.current)
+        }
+      }
+    }
+    window.addEventListener('mouseup', handleGlobalMouseUp)
+
+    const handleDragStart = (e) => {
+      if (globalMeasureModeRef.current && freehandMeasureModeRef.current) {
+        e.preventDefault()
+      }
+    }
+    const mapContainer = map.getContainer()
+    mapContainer.addEventListener('dragstart', handleDragStart)
+
+    map.on('click', (e) => {
+      if (globalMeasureModeRef.current) {
+        if (freehandMeasureModeRef.current) return // Click is handled by mousedown/up in freehand
+        globalMeasurePointsRef.current.push(e.latlng)
+        updateGlobalMeasurePolygon(map)
+        setMeasureRenderTrigger(prev => prev + 1)
+        return
+      }
+      const sp = selectedPlotRef.current
+      if (sp && sp.lat != null && sp.lon != null) {
+        if (measureModeRef.current) {
+          // Measure exact distance from clicked point to the plot
+          const clickedLatLng = e.latlng
+          const plotLatLng = L.latLng(sp.lat, sp.lon)
+          const distance = clickedLatLng.distanceTo(plotLatLng)
+          
+          const distanceStr = distance > 1000 ? (distance / 1000).toFixed(2) + ' km' : Math.round(distance) + ' m'
+          
+          if (distanceLineRef.current) map.removeLayer(distanceLineRef.current)
+          if (distanceMarkerRef.current) map.removeLayer(distanceMarkerRef.current)
+          
+          distanceLineRef.current = L.polyline([clickedLatLng, plotLatLng], { color: '#0ea5e9', dashArray: '5, 10', weight: 3 }).addTo(map)
+          distanceMarkerRef.current = L.marker(clickedLatLng, { 
+            icon: L.divIcon({
+              className: 'custom-div-icon',
+              html: `<div style="background: white; border: 2px solid #0ea5e9; border-radius: 50%; width: 12px; height: 12px;"></div>`,
+              iconSize: [12, 12],
+              iconAnchor: [6, 6]
+            })
+          }).addTo(map)
+          .bindPopup(`<div style="font-weight: 600; font-family: inherit; font-size: 13px;">Distance to Plot:<br/><span style="color: #0ea5e9; font-size: 15px;">${distanceStr}</span></div>`, { closeOnClick: false, autoClose: false })
+          .openPopup()
+        } else {
+          // Measure mode off -> clicking map deselects the plot
+          if (selectedLayerRef.current) {
+            handleClosePanel()
+          }
+        }
+      } else {
+        if (selectedLayerRef.current) {
+          handleClosePanel()
+        }
+      }
+    })
+
+    map.on('contextmenu', (e) => {
+      if (globalMeasureModeRef.current) {
+        if (globalMeasurePointsRef.current.length > 0) {
+          globalMeasurePointsRef.current.pop()
+          updateGlobalMeasurePolygon(map)
+          setMeasureRenderTrigger(prev => prev + 1)
+        } else if (globalPolygonsRef.current.length > 0) {
+          globalPolygonsRef.current.pop()
+          updateGlobalMeasurePolygon(map)
+          setMeasureRenderTrigger(prev => prev + 1)
+        } else {
+          setIsGlobalMeasure(false)
+        }
+        return
+      }
+      if (selectedLayerRef.current) {
+        handleClosePanel()
+      }
+    })
 
     // Esri World Boundaries and Places (labels + roads)
     const labelsLayer = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-      { maxNativeZoom: 18, maxZoom: 22 }
+      { pane: 'labelsPane', maxNativeZoom: 18, maxZoom: 22 }
     )
     labelsLayerRef.current = labelsLayer
 
@@ -351,6 +761,12 @@ export default function MapPage() {
 
     // Cleanup on unmount
     return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp)
+      mapContainer.removeEventListener('dragstart', handleDragStart)
+      if (flyToSafetyTimerRef.current) {
+        clearTimeout(flyToSafetyTimerRef.current)
+        flyToSafetyTimerRef.current = null
+      }
       map.remove()
       mapInstanceRef.current = null
       labelsLayerRef.current = null
@@ -364,10 +780,17 @@ export default function MapPage() {
     if (!map) return
 
     if (currentStep === 'READY') {
-      // Show reference labels & boundaries
-      if (labelsLayer && !map.hasLayer(labelsLayer)) {
-        labelsLayer.addTo(map)
+      // Show reference labels & boundaries ONLY on Satellite basemap
+      if (activeBasemap === 'Satellite') {
+        if (labelsLayer && !map.hasLayer(labelsLayer)) {
+          labelsLayer.addTo(map)
+        }
+      } else {
+        if (labelsLayer && map.hasLayer(labelsLayer)) {
+          map.removeLayer(labelsLayer)
+        }
       }
+
       // Show parcel GeoJSON polygons
       layersRef.current.forEach(({ layer }) => {
         if (!map.hasLayer(layer)) {
@@ -375,7 +798,7 @@ export default function MapPage() {
         }
       })
     } else {
-      // Hide reference labels & boundaries
+      // In selection flow (non-READY steps): hide reference labels & boundaries
       if (labelsLayer && map.hasLayer(labelsLayer)) {
         map.removeLayer(labelsLayer)
       }
@@ -389,11 +812,13 @@ export default function MapPage() {
         }
       })
     }
-  }, [currentStep, plots])
+  }, [currentStep, plots, activeBasemap])
+
 
   // ── Plot Selection ─────────────────────────────────────────────────────
   const selectPlot = (plot) => {
     setSelectedPlot(plot)
+    setIsPinned(true)
     setActivePanelTab('details')
     clearRouteAndNearby()
     setAddressViewMode('db')
@@ -406,10 +831,47 @@ export default function MapPage() {
   useEffect(() => {
     if (!activeDistrictId) return
     setLoading(true)
-    getPlots(activeDistrictId)
-      .then(setPlots)
-      .catch(err => setError(err.response?.data?.detail || 'Failed to load parcels.'))
-      .finally(() => setLoading(false))
+    
+    // Fetch region details
+    getNode(activeDistrictId).then(node => {
+      setActiveNode(node)
+      if (node?.level === 'TALUK') {
+        setSelectedTalukNode(node)
+        setSelectedTaluk(node.name)
+        getChildren(node.id).then(setVillagesList).catch(() => {})
+        setCurrentStep('VILLAGE')
+        setIsBlurOverlayVisible(true)
+        setPlots([])
+        setLoading(false)
+      } else if (node?.level === 'VILLAGE') {
+        setSelectedVillageNode(node)
+        setSelectedVillage(node.name)
+        setCurrentStep('READY')
+        setIsBlurOverlayVisible(false)
+        getPlots(activeDistrictId)
+          .then(setPlots)
+          .catch(err => setError(err.response?.data?.detail || 'Failed to load parcels.'))
+          .finally(() => setLoading(false))
+      } else if (node?.level === 'DISTRICT') {
+        setSelectedDistrictNode(node)
+        setSelectedDistrict(node.name)
+        getChildren(node.id).then(setTaluksList).catch(() => {})
+        setCurrentStep('TALUK')
+        setIsBlurOverlayVisible(true)
+        setPlots([])
+        setLoading(false)
+      } else {
+        // COUNTRY / overseas
+        setCurrentStep('READY')
+        setIsBlurOverlayVisible(false)
+        getPlots(activeDistrictId)
+          .then(setPlots)
+          .catch(err => setError(err.response?.data?.detail || 'Failed to load parcels.'))
+          .finally(() => setLoading(false))
+      }
+    }).catch(() => {
+      setLoading(false)
+    })
   }, [activeDistrictId])
 
   // ── Load Geo Nodes for Counts ──────────────────────────────────────
@@ -428,6 +890,139 @@ export default function MapPage() {
       getChildren(tnNode.id).then(setDistricts).catch(() => {})
     }
   }, [tnNode])
+
+  // ── Pin / Unpin & Floating Card Controls ────────────────────────────
+  const togglePin = (e) => {
+    e?.stopPropagation()
+    if (isPinned) {
+      // Unpinning: capture current bounding rect of the card
+      if (panelRef.current) {
+        const rect = panelRef.current.getBoundingClientRect()
+        setFloatingPos({
+          x: Math.max(10, Math.min(window.innerWidth - 390, rect.left)),
+          y: Math.max(70, Math.min(window.innerHeight - 100, rect.top))
+        })
+      }
+      setIsPinned(false)
+    } else {
+      // Pinning back: snap directly above the plot
+      setIsPinned(true)
+    }
+  }
+
+  const handleHeaderMouseDown = (e) => {
+    if (isPinned) return
+    if (e.target.closest('button') || e.target.closest('input') || e.target.closest('select')) return
+    e.preventDefault()
+
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialLeft: floatingPos.x,
+      initialTop: floatingPos.y,
+    }
+    setIsDragging(true)
+  }
+
+  useEffect(() => {
+    if (!isDragging) return
+
+    const handleMouseMove = (e) => {
+      const deltaX = e.clientX - dragRef.current.startX
+      const deltaY = e.clientY - dragRef.current.startY
+      
+      const newX = Math.max(10, Math.min(window.innerWidth - 390, dragRef.current.initialLeft + deltaX))
+      const newY = Math.max(70, Math.min(window.innerHeight - 100, dragRef.current.initialTop + deltaY))
+      
+      setFloatingPos({ x: newX, y: newY })
+    }
+
+    const handleMouseUp = () => {
+      setIsDragging(false)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isDragging, floatingPos])
+
+  // ── Pinned Card Position Tracking (Pure React, No Leaflet Popup) ────
+  useEffect(() => {
+    const map = mapInstanceRef.current
+    if (!map || !selectedPlot || !isPinned) return
+
+    const getCenterLatLng = () => {
+      if (selectedPlot.lat != null && selectedPlot.lon != null) {
+        return L.latLng(selectedPlot.lat, selectedPlot.lon)
+      }
+      if (selectedLayerRef.current?.layer) {
+        return selectedLayerRef.current.layer.getBounds().getCenter()
+      }
+      return null
+    }
+
+    const updatePinnedPos = () => {
+      const latlng = getCenterLatLng()
+      if (!latlng) return
+      const pt = map.latLngToContainerPoint(latlng)
+      const x = Math.round(pt.x)
+      const y = Math.round(pt.y)
+      if (panelRef.current) {
+        panelRef.current.style.transition = 'none'
+        panelRef.current.style.left = `${x}px`
+        panelRef.current.style.top = `${y}px`
+      }
+      setPinnedPos({ x, y })
+    }
+
+    const handleZoomAnim = (e) => {
+      const latlng = getCenterLatLng()
+      if (!latlng || !panelRef.current) return
+      const newLayerPoint = map._latLngToNewLayerPoint(latlng, e.zoom, e.center)
+      const pt = map.layerPointToContainerPoint(newLayerPoint)
+      const x = Math.round(pt.x)
+      const y = Math.round(pt.y)
+      panelRef.current.style.transition = 'left 0.25s cubic-bezier(0,0,0.25,1), top 0.25s cubic-bezier(0,0,0.25,1)'
+      panelRef.current.style.left = `${x}px`
+      panelRef.current.style.top = `${y}px`
+      setPinnedPos({ x, y })
+    }
+
+    updatePinnedPos()
+    map.on('move zoom zoomend viewreset', updatePinnedPos)
+    map.on('zoomanim', handleZoomAnim)
+
+    const panelEl = panelRef.current
+    return () => {
+      map.off('move zoom zoomend viewreset', updatePinnedPos)
+      map.off('zoomanim', handleZoomAnim)
+      if (panelEl) {
+        panelEl.style.transition = 'none'
+      }
+    }
+  }, [selectedPlot, isPinned])
+
+  // ── Sync Parcel Center Label Visibility with Selected Plot ─────────
+  useEffect(() => {
+    selectedPlotRef.current = selectedPlot
+    const map = mapInstanceRef.current
+    if (!map) return
+    const zoom = map.getZoom()
+
+    layersRef.current.forEach(({ labelMarker, plot }) => {
+      if (selectedPlot && selectedPlot.id === plot.id) {
+        // Hide tiny label for the open plot
+        if (map.hasLayer(labelMarker)) map.removeLayer(labelMarker)
+      } else if (currentStep === 'READY' && zoom >= 14) {
+        // Redisplay tiny label when closed or for non-selected plots
+        if (!map.hasLayer(labelMarker)) labelMarker.addTo(map)
+      }
+    })
+  }, [selectedPlot, currentStep])
+
 
   // ── Flow Handlers ───────────────────────────────────────────────────
   async function handleSelectIndia() {
@@ -480,29 +1075,153 @@ export default function MapPage() {
 
     try {
       let targetId = activeDistrictId
+      let node = null
       if (!targetId) {
-        const node = await getNodeByName('DISTRICT', 'Coimbatore')
+        node = await getNodeByName('DISTRICT', selectedDistrict || 'Coimbatore')
         if (node) {
           targetId = node.id
           setActiveDistrictId(node.id)
         }
       } else {
-        if (plots.length === 0) {
-          setLoading(true)
-          getPlots(targetId)
-            .then(setPlots)
-            .catch(err => setError(err.response?.data?.detail || 'Failed to load parcels.'))
-            .finally(() => setLoading(false))
+        node = await getNode(targetId).catch(() => null)
+      }
+      setSelectedDistrictNode(node)
+
+      // Fetch Taluks for this district
+      if (node) {
+        const taluksData = await getChildren(node.id).catch(() => [])
+        const finalTaluks = taluksData.length > 0 ? taluksData : CBE_TALUKS.map(name => ({ id: name, name }))
+        setTaluksList(finalTaluks)
+        if (finalTaluks.length > 0) {
+          setSelectedTaluk(finalTaluks[0].name)
+          setSelectedTalukNode(finalTaluks[0])
         }
+      } else {
+        const fallbackTaluks = CBE_TALUKS.map(name => ({ id: name, name }))
+        setTaluksList(fallbackTaluks)
+        setSelectedTaluk(fallbackTaluks[0].name)
+        setSelectedTalukNode(fallbackTaluks[0])
       }
     } catch (e) {
-      console.error('Error fetching Coimbatore node:', e)
+      console.error('Error fetching Coimbatore taluks:', e)
+      const fallbackTaluks = CBE_TALUKS.map(name => ({ id: name, name }))
+      setTaluksList(fallbackTaluks)
+      setSelectedTaluk(fallbackTaluks[0].name)
+      setSelectedTalukNode(fallbackTaluks[0])
+    }
+
+    const timer = setTimeout(() => {
+      setCurrentStep('TALUK')
+      setIsBlurOverlayVisible(true)
+      if (map) map.invalidateSize()
+    }, 1050)
+    if (map) {
+      map.once('moveend', () => {
+        clearTimeout(timer)
+        setCurrentStep('TALUK')
+        setIsBlurOverlayVisible(true)
+        map.invalidateSize()
+      })
+    }
+  }
+
+  async function handleSelectTaluk(talukName) {
+    const targetName = talukName || selectedTaluk || (taluksList[0]?.name) || 'Coimbatore South'
+    const talukObj = taluksList.find(t => t.name === targetName) || { id: targetName, name: targetName }
+    setSelectedTaluk(targetName)
+    setSelectedTalukNode(talukObj)
+
+    setIsBlurOverlayVisible(false)
+    setCurrentStep('PANNING_TALUK')
+    const map = mapInstanceRef.current
+    if (map) {
+      const coords = TALUK_COORDS[targetName]
+      if (coords) {
+        map.flyTo(coords.center, coords.zoom, { duration: 1.0, easeLinearity: 0.25 })
+      } else {
+        map.flyTo(CBE_BOUNDS.getCenter(), 12, { duration: 1.0, easeLinearity: 0.25 })
+      }
+    }
+
+    // Fetch villages for this taluk
+    try {
+      if (talukObj.id && typeof talukObj.id === 'string' && talukObj.id.includes('-')) {
+        const vList = await getChildren(talukObj.id).catch(() => [])
+        setVillagesList(vList)
+        if (vList.length > 0) {
+          setSelectedVillage(vList[0].name)
+          setSelectedVillageNode(vList[0])
+        } else {
+          setSelectedVillage('')
+          setSelectedVillageNode(null)
+        }
+      } else {
+        setVillagesList([])
+        setSelectedVillage('')
+        setSelectedVillageNode(null)
+      }
+    } catch (e) {
+      console.error('Error fetching villages for taluk:', e)
+      setVillagesList([])
+      setSelectedVillage('')
+      setSelectedVillageNode(null)
+    }
+
+    const timer = setTimeout(() => {
+      setCurrentStep('VILLAGE')
+      setIsBlurOverlayVisible(true)
+      if (map) map.invalidateSize()
+    }, 1050)
+    if (map) {
+      map.once('moveend', () => {
+        clearTimeout(timer)
+        setCurrentStep('VILLAGE')
+        setIsBlurOverlayVisible(true)
+        map.invalidateSize()
+      })
+    }
+  }
+
+  async function handleSelectVillage(villageName) {
+    const targetName = villageName || selectedVillage
+    const vObj = villagesList.find(v => v.name === targetName) || selectedVillageNode
+    setSelectedVillage(targetName)
+    setSelectedVillageNode(vObj)
+
+    setIsBlurOverlayVisible(false)
+    setCurrentStep('PANNING_VILLAGE')
+
+    setLoading(true)
+    try {
+      const targetId = vObj?.id || selectedTalukNode?.id || activeDistrictId
+      if (targetId) {
+        const pList = await getPlots(targetId)
+        setPlots(pList)
+
+        const map = mapInstanceRef.current
+        if (map && pList.length > 0) {
+          const pts = pList.filter(p => p.lat != null && p.lon != null).map(p => [p.lat, p.lon])
+          if (pts.length === 1) {
+            map.flyTo(pts[0], 16, { duration: 1.0, easeLinearity: 0.25 })
+          } else if (pts.length > 1) {
+            map.flyToBounds(L.latLngBounds(pts), { padding: [80, 80], maxZoom: 16, duration: 1.0 })
+          }
+        } else if (map && VILLAGE_COORDS[targetName]) {
+          map.flyTo(VILLAGE_COORDS[targetName].center, VILLAGE_COORDS[targetName].zoom, { duration: 1.0, easeLinearity: 0.25 })
+        }
+      }
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to load parcels.')
+    } finally {
+      setLoading(false)
     }
 
     const timer = setTimeout(() => {
       setCurrentStep('READY')
+      const map = mapInstanceRef.current
       if (map) map.invalidateSize()
     }, 1050)
+    const map = mapInstanceRef.current
     if (map) {
       map.once('moveend', () => {
         clearTimeout(timer)
@@ -521,9 +1240,25 @@ export default function MapPage() {
     const map = mapInstanceRef.current
 
     if (currentStep === 'READY') {
-      setPlots([])
       setSelectedPlot(null)
-      setActiveDistrictId(null)
+      setCurrentStep('VILLAGE')
+      setIsBlurOverlayVisible(true)
+      if (map && selectedTaluk && TALUK_COORDS[selectedTaluk]) {
+        map.flyTo(TALUK_COORDS[selectedTaluk].center, TALUK_COORDS[selectedTaluk].zoom, { duration: 1.0 })
+      }
+      return
+    }
+
+    if (currentStep === 'VILLAGE') {
+      setCurrentStep('TALUK')
+      setIsBlurOverlayVisible(true)
+      if (map) {
+        map.flyTo(CBE_BOUNDS.getCenter(), 11, { duration: 1.0 })
+      }
+      return
+    }
+
+    if (currentStep === 'TALUK') {
       setCurrentStep('DISTRICT')
       setIsBlurOverlayVisible(true)
       if (map) {
@@ -560,27 +1295,37 @@ export default function MapPage() {
 
   const getHeaderCenter = () => {
     if (currentStep === 'READY') {
-      const parcelCount = plots.filter(p => p.boundary_geojson).length
+      const displayLocation = selectedVillage || selectedTaluk || (activeNode ? activeNode.name : 'Coimbatore')
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
           <span className="header-center-title">
-            Coimbatore District — Land Parcels
+            {displayLocation} — Land Parcels
           </span>
-          {loading ? (
-            <span className="spinner" />
-          ) : (
-            <span className="badge badge-blue">
-              {parcelCount} {parcelCount === 1 ? 'parcel' : 'parcels'}
-            </span>
-          )}
+          {loading && <span className="spinner" />}
         </div>
+      )
+    }
+
+    if (currentStep === 'VILLAGE' || currentStep === 'PANNING_VILLAGE') {
+      return (
+        <span className="header-center-title" style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
+          {selectedDistrict} › {selectedTaluk || 'Taluk'} › Select Village
+        </span>
+      )
+    }
+
+    if (currentStep === 'TALUK' || currentStep === 'PANNING_TALUK') {
+      return (
+        <span className="header-center-title" style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
+          {selectedDistrict} › Select Taluk
+        </span>
       )
     }
 
     if (currentStep === 'DISTRICT' || currentStep === 'PANNING_CBE') {
       return (
         <span className="header-center-title" style={{ color: 'var(--color-text-muted)', fontSize: '0.9rem' }}>
-          Tamil Nadu › Select District
+          {selectedState} › Select District
         </span>
       )
     }
@@ -622,26 +1367,14 @@ export default function MapPage() {
         geoLayer.addTo(map)
       }
 
-      // Add popup
-      const areaText = plot.area_value ? `${Number(plot.area_value).toLocaleString()} ${plot.area_unit || 'sqm'}` : 'N/A'
-      const popupContent = `
-        <div style="font-family: inherit; margin: 0; min-width: 150px;">
-          <h4 style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600;">${plot.plot_number || 'Parcel'}</h4>
-          <p style="margin: 0 0 4px 0; font-size: 12px; color: #475569;">${plot.property_name || 'Unnamed'}</p>
-          <p style="margin: 0; font-size: 12px; font-weight: 500;">Area: ${areaText}</p>
-        </div>
-      `
-      geoLayer.bindPopup(popupContent, {
-        autoPanPaddingBottomRight: [380, 20],
-        closeButton: true
-      })
+      // Note: Custom React popup will be bound on selection
 
-      // Compute center for label
+      // Compute center for label (centered on the polygon)
       const bounds = geoLayer.getBounds()
-      const center = bounds.getCenter()
+      const labelPosition = bounds.getCenter()
 
       // Create a label marker (DivIcon) — toggled by zoom
-      const labelMarker = L.marker(center, {
+      const labelMarker = L.marker(labelPosition, {
         icon: L.divIcon({
           className: '',
           html: `<div class="parcel-label" data-plotid="${plot.id}">
@@ -665,7 +1398,8 @@ export default function MapPage() {
           geoLayer.setStyle(PARCEL_STYLE)
         }
       })
-      geoLayer.on('click', () => {
+      geoLayer.on('click', (e) => {
+        if (e) L.DomEvent.stopPropagation(e)
         handleSelectPlot(plot, geoLayer, bounds)
       })
 
@@ -675,7 +1409,11 @@ export default function MapPage() {
     // Update labels on zoom
     function updateLabels() {
       const zoom = map.getZoom()
-      layersRef.current.forEach(({ labelMarker }) => {
+      layersRef.current.forEach(({ labelMarker, plot }) => {
+        if (selectedPlotRef.current?.id === plot.id) {
+          if (map.hasLayer(labelMarker)) map.removeLayer(labelMarker)
+          return
+        }
         if (currentStep === 'READY' && zoom >= 14) {
           if (!map.hasLayer(labelMarker)) labelMarker.addTo(map)
           // Show/hide name part
@@ -702,13 +1440,17 @@ export default function MapPage() {
     const item = layersRef.current.find(l => l.plot.id === plot.id)
     if (!item) return
     handleSelectPlot(plot, item.layer, item.layer.getBounds())
-    const layers = item.layer.getLayers()
-    if (layers.length > 0) {
-      layers[0].openPopup()
-    }
   }
 
   async function handleSelectPlot(plot, geoLayer, bounds) {
+    selectedPlotRef.current = plot
+
+    // Hide tiny center label for this plot while modal is open
+    const currentItem = layersRef.current.find(l => l.plot.id === plot.id)
+    if (currentItem?.labelMarker && mapInstanceRef.current?.hasLayer(currentItem.labelMarker)) {
+      mapInstanceRef.current.removeLayer(currentItem.labelMarker)
+    }
+
     // Reset previous selected
     if (selectedLayerRef.current) {
       selectedLayerRef.current.layer.setStyle(PARCEL_STYLE)
@@ -718,18 +1460,55 @@ export default function MapPage() {
     selectedLayerRef.current = { layer: geoLayer }
 
     setSelectedPlot(plot)
+    setIsPinned(true)
     setAddressViewMode('db')
 
-    // Wait for React to render the panel and physically resize the map container
-    setTimeout(() => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.invalidateSize()
-        mapInstanceRef.current.flyTo(bounds.getCenter(), 18, {
-          animate: true,
-          duration: 1.5
-        })
+    const map = mapInstanceRef.current
+    if (map) {
+      if (flyToSafetyTimerRef.current) {
+        clearTimeout(flyToSafetyTimerRef.current)
+        flyToSafetyTimerRef.current = null
       }
-    }, 150)
+
+      // Stop any prior animation cleanly
+      map.stop()
+
+      const container = map.getContainer()
+      if (container) {
+        container.style.pointerEvents = 'none'
+      }
+      map.dragging?.disable()
+      map.touchZoom?.disable()
+      map.doubleClickZoom?.disable()
+      map.scrollWheelZoom?.disable()
+      map.boxZoom?.disable()
+      map.keyboard?.disable()
+
+      map.flyTo(bounds.getCenter(), 18, {
+        animate: true,
+        duration: 1.2
+      })
+
+      const onEnd = () => {
+        if (container) {
+          container.style.pointerEvents = ''
+        }
+        map.dragging?.enable()
+        map.touchZoom?.enable()
+        map.doubleClickZoom?.enable()
+        map.scrollWheelZoom?.enable()
+        map.boxZoom?.enable()
+        map.keyboard?.enable()
+        map.off('moveend', onEnd)
+        if (flyToSafetyTimerRef.current) {
+          clearTimeout(flyToSafetyTimerRef.current)
+          flyToSafetyTimerRef.current = null
+        }
+      }
+
+      flyToSafetyTimerRef.current = setTimeout(onEnd, 1400)
+      map.once('moveend', onEnd)
+    }
 
     // Fetch full detail (with documents)
     try {
@@ -741,18 +1520,41 @@ export default function MapPage() {
   }
 
   function handleClosePanel() {
+    selectedPlotRef.current = null
     setSelectedPlot(null)
+    setIsPinned(true)
     clearRouteAndNearby()
     if (selectedLayerRef.current) {
       selectedLayerRef.current.layer.setStyle(PARCEL_STYLE)
       selectedLayerRef.current = null
+    }
+    const map = mapInstanceRef.current
+    if (map) {
+      const zoom = map.getZoom()
+      if (currentStep === 'READY' && zoom >= 14) {
+        layersRef.current.forEach(({ labelMarker }) => {
+          if (!map.hasLayer(labelMarker)) labelMarker.addTo(map)
+        })
+      }
+      const container = map.getContainer()
+      if (container) container.style.pointerEvents = ''
+      map.dragging?.enable()
+      map.touchZoom?.enable()
+      map.doubleClickZoom?.enable()
+      map.scrollWheelZoom?.enable()
+      map.boxZoom?.enable()
+      map.keyboard?.enable()
+      if (flyToSafetyTimerRef.current) {
+        clearTimeout(flyToSafetyTimerRef.current)
+        flyToSafetyTimerRef.current = null
+      }
     }
   }
 
   // ── PDF Preview & Download ───────────────────────────────────────────
   async function handlePreviewPdf(doc) {
     try {
-      const { url } = await getDocumentUrl(doc.id)
+      const { url } = await getDocumentUrl(doc.id, false)
       setPdfModal({ url, docType: doc.doc_type })
     } catch {
       alert('Failed to get document URL.')
@@ -763,8 +1565,25 @@ export default function MapPage() {
 
   async function handleDownloadPdf(doc) {
     try {
-      const { url } = await getDocumentUrl(doc.id)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      let downloadUrl = ''
+      let filename = getOriginalFilename(doc.storage_key, doc.doc_type, doc.isDefaultKml)
+
+      if (doc.isDefaultKml || doc.doc_type === 'SOURCE_KML' || doc.doc_type === 'KML') {
+        const res = await getPlotKmlUrl(selectedPlot.id)
+        downloadUrl = res.url
+        if (res.filename) filename = res.filename
+      } else {
+        const res = await getDocumentUrl(doc.id, true)
+        downloadUrl = res.url
+        if (res.filename) filename = res.filename
+      }
+
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
     } catch {
       alert('Failed to generate document download link.')
     }
@@ -833,14 +1652,15 @@ export default function MapPage() {
         }
       })
       
-      const startMarker = L.marker([startLat, startLng], { title: 'Start' })
-      const endMarker = L.marker([endLat, endLng], { title: 'End' })
+      const addressMarker = L.marker([addrLat, addrLng], { title: inputAddress }).bindPopup(
+        `<div style="font-family: inherit; font-size: 13px; font-weight: 600;">${inputAddress}</div>`
+      )
       
-      const featureGroup = L.featureGroup([geojsonLayer, startMarker, endMarker])
+      const featureGroup = L.featureGroup([geojsonLayer, addressMarker])
       featureGroup.addTo(mapInstanceRef.current)
       routeLayerRef.current = featureGroup
       
-      mapInstanceRef.current.fitBounds(featureGroup.getBounds(), { padding: [50, 50] })
+      mapInstanceRef.current.fitBounds(featureGroup.getBounds().extend([pLat, pLng]), { padding: [50, 50] })
       
     } catch (err) {
       console.error(err)
@@ -859,7 +1679,16 @@ export default function MapPage() {
     
     try {
       const res = await getNearbyPlaces(selectedPlot.lat, selectedPlot.lon, radiusToUse, category)
-      const elements = res.elements || []
+      const rawElements = res.elements || []
+      const elements = rawElements.filter(el => {
+        if (el.lat == null || el.lon == null) return false
+        const d = L.latLng(el.lat, el.lon).distanceTo(L.latLng(selectedPlot.lat, selectedPlot.lon))
+        return d <= radiusToUse
+      }).sort((a, b) => {
+        const dA = L.latLng(a.lat, a.lon).distanceTo(L.latLng(selectedPlot.lat, selectedPlot.lon))
+        const dB = L.latLng(b.lat, b.lon).distanceTo(L.latLng(selectedPlot.lat, selectedPlot.lon))
+        return dA - dB
+      })
       setNearbyPlaces(elements)
       
       if (nearbyLayerRef.current) {
@@ -889,8 +1718,8 @@ export default function MapPage() {
         group.addTo(mapInstanceRef.current)
         nearbyLayerRef.current = group
         
-        group.addLayer(L.marker([selectedPlot.lat, selectedPlot.lon]))
-        mapInstanceRef.current.fitBounds(group.getBounds(), { padding: [50, 50] })
+        const bounds = group.getBounds().extend([selectedPlot.lat, selectedPlot.lon])
+        mapInstanceRef.current.fitBounds(bounds, { padding: [50, 50] })
       }
       
     } catch (err) {
@@ -902,6 +1731,17 @@ export default function MapPage() {
   }
 
   const filteredPlots = plots.filter(plot => {
+    if (selectedVillageNode) {
+      if (plot.geo_node_id && plot.geo_node_id === selectedVillageNode.id) return true
+      const loc = ((plot.location_name || '') + ' ' + (plot.address || '') + ' ' + (plot.landmark || '') + ' ' + (plot.property_name || '')).toLowerCase()
+      if (loc.includes(selectedVillageNode.name.toLowerCase())) return true
+      return false
+    } else if (selectedVillage) {
+      const loc = ((plot.location_name || '') + ' ' + (plot.address || '') + ' ' + (plot.landmark || '') + ' ' + (plot.property_name || '')).toLowerCase()
+      const pNum = (plot.plot_number || '').toLowerCase()
+      if (!loc.includes(selectedVillage.toLowerCase()) && !pNum.includes(selectedVillage.toLowerCase())) return false
+    }
+
     if (!searchQuery.trim()) return true
     const q = searchQuery.toLowerCase().trim()
     const pNum = (plot.plot_number || '').toLowerCase()
@@ -920,7 +1760,7 @@ export default function MapPage() {
         {/* Map */}
         <div
           ref={mapRef}
-          className={`map-container ${selectedPlot ? 'has-left-panel' : ''}`}
+          className="map-container"
           style={{ flex: 1, height: '100%', background: 'var(--map-bg-color, #0b0f19)' }}
         />
 
@@ -957,7 +1797,7 @@ export default function MapPage() {
             {isSearchOpen && (
               <div className="search-dropdown-menu">
                 <div className="search-dropdown-header">
-                  <span>Parcels in Region ({filteredPlots.length})</span>
+                  <span>Parcels in {selectedVillage || 'Region'}</span>
                 </div>
                 <div className="search-dropdown-list">
                   {filteredPlots.map(plot => {
@@ -984,19 +1824,130 @@ export default function MapPage() {
           </div>
         )}
 
-        {/* Left Side Info Panel */}
+        {/* Global Area Measure Tool */}
+        {currentStep === 'READY' && (
+          <div style={{ position: 'absolute', bottom: 30, left: 30, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <button
+              onClick={() => {
+                 const newVal = !isGlobalMeasure
+                 setIsGlobalMeasure(newVal)
+                 if (!newVal) {
+                   globalMeasurePointsRef.current = []
+                   globalPolygonsRef.current = []
+                   updateGlobalMeasurePolygon(mapInstanceRef.current)
+                 }
+              }}
+              className="btn"
+              style={{
+                background: isGlobalMeasure ? '#f59e0b' : '#fff',
+                color: isGlobalMeasure ? '#fff' : '#333',
+                border: '1px solid #f59e0b',
+                boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                padding: '0.6rem 1rem',
+                borderRadius: '8px',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              <Ruler size={18} />
+              {isGlobalMeasure ? 'Cancel Measuring' : 'Draw Area'}
+            </button>
+            {isGlobalMeasure && (
+              <div style={{ background: '#fff', padding: '0.75rem', borderRadius: '8px', fontSize: '0.85rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)', border: '1px solid var(--color-border)', color: 'var(--color-text)', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <strong>Click</strong> on map to draw points.<br/>
+                  <strong>Right-click</strong> to undo points or shapes.
+                </div>
+                
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                  <span style={{ fontWeight: '600' }}>Units:</span>
+                  <select 
+                    value={globalAreaUnit} 
+                    onChange={(e) => setGlobalAreaUnit(e.target.value)}
+                    style={{ padding: '0.2rem 0.5rem', fontSize: '0.8rem', height: 'auto', flex: 1, borderRadius: '4px', border: '1px solid #cbd5e1' }}
+                  >
+                    <option value="sqm">Sq. Meters</option>
+                    <option value="hectares">Hectares</option>
+                    <option value="acres">Acres</option>
+                    <option value="sqft">Sq. Feet</option>
+                  </select>
+                </div>
+                
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', borderTop: '1px solid #f1f5f9', paddingTop: '0.5rem' }}>
+                  <input 
+                    type="checkbox" 
+                    checked={isFreehandMeasure}
+                    onChange={(e) => setIsFreehandMeasure(e.target.checked)}
+                    style={{ accentColor: '#f59e0b', width: '16px', height: '16px' }}
+                  />
+                  <span style={{ fontWeight: '500' }}>Freehand Draw Mode</span>
+                </label>
+                {isFreehandMeasure && (
+                  <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '-0.2rem' }}>
+                    Click & drag to draw a continuous shape.<br/>Release mouse to finish shape.
+                  </div>
+                )}
+                {!isFreehandMeasure && globalMeasurePointsRef.current.length > 2 && (
+                  <button
+                    className="btn btn-primary"
+                    style={{ padding: '0.4rem', fontSize: '0.8rem', justifyContent: 'center' }}
+                    onClick={() => {
+                       const pts = globalMeasurePointsRef.current
+                       const color = POLYGON_COLORS[globalPolygonsRef.current.length % POLYGON_COLORS.length]
+                       globalPolygonsRef.current.push({ points: [...pts], color })
+                       globalMeasurePointsRef.current = []
+                       if (mapInstanceRef.current) updateGlobalMeasurePolygon(mapInstanceRef.current)
+                       setMeasureRenderTrigger(prev => prev + 1)
+                    }}
+                  >
+                    Finish Shape
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Left Side Info Panel rendered directly (Pinned directly above plot, or Floating when Unpinned) */}
         {selectedPlot && (
-          <div className="left-info-panel">
+          <div 
+            ref={panelRef}
+            className={`left-info-panel ${isPinned ? 'pinned-plot-card' : 'unpinned-floating-card'}`}
+            style={isPinned ? {
+              position: 'absolute',
+              left: `${pinnedPos.x}px`,
+              top: `${pinnedPos.y}px`,
+              transform: 'translate(-50%, -100%) translateY(-16px)',
+              zIndex: 1000,
+              pointerEvents: 'auto',
+            } : {
+              position: 'fixed',
+              left: `${floatingPos.x}px`,
+              top: `${floatingPos.y}px`,
+              zIndex: 2000,
+              boxShadow: '0 20px 50px -10px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(0, 0, 0, 0.08)',
+            }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
             {/* Blue Header Bit */}
-            <div style={{
-              padding: '1.25rem',
-              borderBottom: '1px solid var(--color-border)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
-              color: '#fff',
-            }}>
+            <div 
+              onMouseDown={handleHeaderMouseDown}
+              style={{
+                padding: '1.25rem',
+                borderBottom: '1px solid var(--color-border)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                background: 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
+                color: '#fff',
+                cursor: !isPinned ? (isDragging ? 'grabbing' : 'grab') : 'default',
+                userSelect: 'none'
+              }}
+            >
               <div>
                 <div style={{ fontWeight: '700', fontSize: '1.2rem', letterSpacing: '-0.01em', lineHeight: '1.2' }}>
                   {selectedPlot.plot_number || 'Parcel'}
@@ -1005,25 +1956,77 @@ export default function MapPage() {
                   {selectedPlot.property_name || 'Unnamed Parcel'}
                 </div>
               </div>
-              <button
-                onClick={handleClosePanel}
-                style={{
-                  background: 'rgba(255,255,255,0.18)',
-                  border: 'none',
-                  color: '#fff',
-                  borderRadius: '50%',
-                  width: '32px',
-                  height: '32px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  transition: 'background 0.15s ease'
-                }}
-                aria-label="Close panel"
-              >
-                <X size={18} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <button
+                  type="button"
+                  onClick={togglePin}
+                  title={isPinned ? "Unpin card to drag freely across screen" : "Pin card back to plot"}
+                  style={{
+                    background: isPinned ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.38)',
+                    border: 'none',
+                    color: '#fff',
+                    borderRadius: '50%',
+                    width: '32px',
+                    height: '32px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.15s ease'
+                  }}
+                  aria-label={isPinned ? "Unpin card" : "Pin card"}
+                >
+                  {isPinned ? <Pin size={16} /> : <PinOff size={16} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMeasureMode(!isMeasureMode)
+                    if (isMeasureMode) {
+                      // Turning off, clear existing tools
+                      if (distanceLineRef.current) mapInstanceRef.current?.removeLayer(distanceLineRef.current)
+                      if (distanceMarkerRef.current) mapInstanceRef.current?.removeLayer(distanceMarkerRef.current)
+                    }
+                  }}
+                  title={isMeasureMode ? "Turn off measure tool" : "Measure distance to plot"}
+                  style={{
+                    background: isMeasureMode ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.18)',
+                    border: 'none',
+                    color: isMeasureMode ? '#1d4ed8' : '#fff',
+                    borderRadius: '50%',
+                    width: '32px',
+                    height: '32px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.15s ease'
+                  }}
+                  aria-label="Measure mode"
+                >
+                  <Ruler size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClosePanel}
+                  style={{
+                    background: 'rgba(255,255,255,0.18)',
+                    border: 'none',
+                    color: '#fff',
+                    borderRadius: '50%',
+                    width: '32px',
+                    height: '32px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'background 0.15s ease'
+                  }}
+                  aria-label="Close panel"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
 
             {/* Tab Bar */}
@@ -1166,82 +2169,112 @@ export default function MapPage() {
               <div>
                 <div style={{ marginBottom: '0.85rem' }}>
                   <label style={{ fontSize: '0.72rem', fontWeight: '700', color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.35rem' }}>
-                    Documents Category
+                    Uploaded Documents
                   </label>
-                  <select
-                    className="form-input"
-                    style={{
-                      width: '100%',
-                      fontWeight: '600',
-                      fontSize: '0.875rem',
-                      padding: '0 0.75rem',
-                      height: '38px',
-                      borderRadius: '8px',
-                      border: '1px solid var(--color-border)',
-                      background: '#ffffff'
-                    }}
-                    value={panelDocCategory}
-                    onChange={e => setPanelDocCategory(e.target.value)}
-                  >
-                    <option value="land_documents">Land Documents</option>
-                    <option value="buildup_details">Build-up Details</option>
-                    <option value="others">Others</option>
-                  </select>
                 </div>
 
-                {/* Filtered documents list */}
                 {(() => {
-                  const allowedTypes = DOC_CATEGORIES[panelDocCategory] || []
-                  const categoryDocs = (selectedPlot.documents || []).filter(d => allowedTypes.includes(d.doc_type))
+                  const plotDocs = [...(selectedPlot.documents || [])]
 
-                  if (categoryDocs.length === 0) {
+                  // KML File must always be available to download.
+                  const hasKml = plotDocs.some(d => d.doc_type === 'SOURCE_KML' || d.doc_type === 'KML')
+                  if (!hasKml) {
+                    plotDocs.push({
+                      id: `default-kml-${selectedPlot.id}`,
+                      doc_type: 'SOURCE_KML',
+                      storage_key: selectedPlot.source_file_key || `kml/${selectedPlot.id}.kml`,
+                      isDefaultKml: true
+                    })
+                  }
+
+                  if (plotDocs.length === 0) {
                     return (
                       <div style={{ padding: '0.75rem 0', color: 'var(--color-text-muted)', fontSize: '0.85rem', fontStyle: 'italic' }}>
-                        No documents in this category.
+                        No documents uploaded for this parcel.
                       </div>
                     )
                   }
 
+                  const docsByType = {}
+                  plotDocs.forEach(doc => {
+                    if (!docsByType[doc.doc_type]) docsByType[doc.doc_type] = []
+                    docsByType[doc.doc_type].push(doc)
+                  })
+
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      {categoryDocs.map(doc => (
-                        <div key={doc.id} style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          padding: '0.55rem 0.75rem',
-                          background: '#f8fafc',
-                          borderRadius: '8px',
-                          border: '1px solid var(--color-border)',
-                        }}>
-                          <span style={{ fontSize: '0.85rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#0f172a' }}>
-                            <FileText size={15} style={{ color: 'var(--color-primary)' }} />
-                            <span>{doc.doc_type}</span>
-                          </span>
-                          <div style={{ display: 'flex', gap: '0.35rem' }}>
-                            <button
-                              className="btn btn-outline btn-sm"
-                              onClick={() => handlePreviewPdf(doc)}
-                              disabled={pdfLoading}
-                              title="Preview PDF"
-                              style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderRadius: '6px' }}
-                            >
-                              <Eye size={13} />
-                            </button>
-                            <button
-                              className="btn btn-primary btn-sm"
-                              onClick={() => handleDownloadPdf(doc)}
-                              title="Download PDF"
-                              style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderRadius: '6px' }}
-                            >
-                              <Download size={13} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
+                      {Object.entries(docsByType).map(([docType, docs]) => {
+                        const title = DOC_TITLES[docType] || docType.replace(/_/g, ' ')
+                        if (docs.length === 1) {
+                          const doc = docs[0]
+                          const filename = getOriginalFilename(doc.storage_key, docType, doc.isDefaultKml)
+                          const isNonPdf = docType === 'SOURCE_KML' || docType === 'KML' || docType === 'SHAPEFILE' || (doc.storage_key && !doc.storage_key.toLowerCase().endsWith('.pdf'))
+                          return (
+                            <div key={doc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.55rem 0.75rem', background: '#f8fafc', borderRadius: '8px', border: '1px solid var(--color-border)' }}>
+                              <span style={{ fontSize: '0.85rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#0f172a' }}>
+                                <FileText size={15} style={{ color: 'var(--color-primary)' }} />
+                                <span style={{ textTransform: 'capitalize' }}>{title}</span>
+                              </span>
+                              <div style={{ display: 'flex', gap: '0.35rem' }}>
+                                {!isNonPdf && (
+                                  <button className="btn btn-outline btn-sm" onClick={() => handlePreviewPdf(doc)} disabled={pdfLoading} title={`Preview ${filename}`} style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderRadius: '6px' }}><Eye size={13} /></button>
+                                )}
+                                <button className="btn btn-primary btn-sm" onClick={() => handleDownloadPdf(doc)} title={`Download ${filename}`} style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', borderRadius: '6px' }}><Download size={13} /></button>
+                              </div>
+                            </div>
+                          )
+                        } else {
+                          const isExpanded = expandedFolders[docType]
+                          return (
+                            <div key={docType} style={{ background: '#f8fafc', borderRadius: '8px', border: '1px solid var(--color-border)', overflow: 'hidden' }}>
+                              <div 
+                                onClick={() => toggleFolder(docType)}
+                                style={{ padding: '0.55rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', background: isExpanded ? '#f1f5f9' : 'transparent', transition: 'background 0.2s ease' }}
+                              >
+                                <div style={{ fontSize: '0.85rem', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#0f172a' }}>
+                                  <Folder size={15} style={{ color: 'var(--color-primary)' }} />
+                                  <span style={{ textTransform: 'capitalize' }}>{title} ({docs.length})</span>
+                                </div>
+                                {isExpanded ? <ChevronDown size={16} color="var(--color-text-muted)" /> : <ChevronRight size={16} color="var(--color-text-muted)" />}
+                              </div>
+                              {isExpanded && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', padding: '0.5rem 0.75rem', paddingLeft: '1.75rem', borderTop: '1px solid #e2e8f0', background: '#fff' }}>
+                                  {docs.map((doc, idx) => {
+                                    const filename = getOriginalFilename(doc.storage_key, docType, doc.isDefaultKml)
+                                    const isNonPdf = docType === 'SOURCE_KML' || docType === 'KML' || docType === 'SHAPEFILE' || (doc.storage_key && !doc.storage_key.toLowerCase().endsWith('.pdf'))
+                                    return (
+                                      <div key={doc.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.25rem 0' }}>
+                                        <span style={{ fontSize: '0.75rem', color: 'var(--color-text)', display: 'flex', alignItems: 'center', gap: '0.4rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '60%' }} title={filename}>
+                                          <FileText size={13} color="var(--color-text-muted)" style={{ flexShrink: 0 }} />
+                                          {filename}
+                                        </span>
+                                        <div style={{ display: 'flex', gap: '0.25rem', flexShrink: 0 }}>
+                                          {!isNonPdf && (
+                                            <button className="btn btn-outline btn-sm" onClick={() => handlePreviewPdf(doc)} disabled={pdfLoading} title="Preview Document" style={{ padding: '0.15rem 0.35rem', fontSize: '0.7rem', borderRadius: '4px' }}><Eye size={12} /></button>
+                                          )}
+                                          <button className="btn btn-primary btn-sm" onClick={() => handleDownloadPdf(doc)} title="Download Document" style={{ padding: '0.15rem 0.35rem', fontSize: '0.7rem', borderRadius: '4px' }}><Download size={12} /></button>
+                                        </div>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        }
+                      })}
                     </div>
                   )
                 })()}
+                
+                <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.25rem' }}>
+                  <button className="btn btn-outline" style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem', fontWeight: '600' }} title="View RSR">
+                    RSR
+                  </button>
+                  <button className="btn btn-outline" style={{ flex: 1, padding: '0.5rem', fontSize: '0.85rem', fontWeight: '600' }} title="View Master Plan">
+                    Master Plan
+                  </button>
+                </div>
               </div>
                 </>
               )}
@@ -1293,14 +2326,22 @@ export default function MapPage() {
 
                     {/* Autocomplete Dropdown */}
                     {showSuggestions && (
-                      <div style={{ background: '#fff', border: '1px solid var(--color-border)', borderRadius: '8px', maxHeight: '200px', overflowY: 'auto', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', marginTop: '0.25rem' }}>
+                      <div 
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ background: '#fff', border: '1px solid var(--color-border)', borderRadius: '8px', maxHeight: '200px', overflowY: 'auto', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)', marginTop: '0.25rem' }}
+                      >
                         {isGeocoding ? (
                           <div style={{ padding: '0.75rem', fontSize: '0.85rem', color: 'var(--color-text-muted)', textAlign: 'center' }}>Searching...</div>
                         ) : geocodeResults.length > 0 ? (
                           geocodeResults.map((item, idx) => (
                             <div 
                               key={idx} 
-                              onClick={() => handleSelectSuggestion(item)}
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleSelectSuggestion(item)
+                              }}
                               style={{ padding: '0.5rem 0.75rem', fontSize: '0.8rem', borderBottom: idx < geocodeResults.length - 1 ? '1px solid #f1f5f9' : 'none', cursor: 'pointer' }}
                               onMouseOver={(e) => e.currentTarget.style.background = '#f8fafc'}
                               onMouseOut={(e) => e.currentTarget.style.background = '#fff'}
@@ -1371,7 +2412,7 @@ export default function MapPage() {
                           <span>{Math.round(routeData.duration / 60)} min</span>
                         </div>
                         <div style={{ color: '#1e40af', fontWeight: '600', fontSize: '0.85rem' }}>
-                          {(routeData.distance / 1000).toFixed(1)} km
+                          {routeData.distance > 1000 ? (routeData.distance / 1000).toFixed(1) + ' km' : Math.round(routeData.distance) + ' m'}
                         </div>
                       </div>
                       
@@ -1418,7 +2459,7 @@ export default function MapPage() {
                   </div>
                   
                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-                    {['Hospital', 'School', 'Restaurant', 'Attraction', 'ATM', 'Park', 'Supermarket', 'Pharmacy', 'Cafe', 'Bank'].map(cat => (
+                    {['Hospital', 'School', 'Restaurant', 'Park', 'Supermarket', 'Pharmacy', 'Bank'].map(cat => (
                       <button
                         key={cat}
                         className={`btn ${nearbyCategory === cat ? 'btn-primary' : 'btn-outline'} btn-sm`}
@@ -1506,135 +2547,186 @@ export default function MapPage() {
         )}
 
         {/* Selection Flow Modal Overlay */}
-        {isBlurOverlayVisible && (() => {
-          const indiaNodeData = countries.find(c => c.name === 'India')
-          const indiaPlotCount = indiaNodeData ? indiaNodeData.plot_count : 0
-
-          const tnNodeData = states.find(s => s.name === 'Tamil Nadu')
-          const tnPlotCount = tnNodeData ? tnNodeData.plot_count : 0
-
-          const cbeNodeData = districts.find(d => d.name === 'Coimbatore')
-          const cbePlotCount = cbeNodeData ? cbeNodeData.plot_count : 0
-
-          return (
-            <div className="map-backdrop-overlay">
-              {currentStep === 'REGION' && (
-                <div className="map-selection-card">
-                  <div className="map-selection-header">
-                    <div className="map-selection-icon">
-                      <img src="/world.png" alt="World" />
-                    </div>
-                    <h2 className="map-selection-title">Select Region</h2>
-                    <p className="map-selection-subtitle">Choose a region to explore registered land parcels</p>
+        {isBlurOverlayVisible && (
+          <div className="map-backdrop-overlay">
+            {currentStep === 'REGION' && (
+              <div className="map-selection-card">
+                <div className="map-selection-header">
+                  <div className="map-selection-icon">
+                    <img src="/world.png" alt="World" />
                   </div>
-                  <div className="selection-option-list">
-                    <button
-                      className="selection-option-btn"
-                      onClick={handleSelectIndia}
-                      autoFocus
-                    >
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-                        <img src="/india-flag.png" alt="India" className="selection-option-img" />
-                        <span style={{ fontWeight: '600' }}>India</span>
-                        {indiaPlotCount > 0 && (
-                          <span className="badge badge-blue" style={{ fontSize: '0.725rem' }}>
-                            {indiaPlotCount} {indiaPlotCount === 1 ? 'parcel' : 'parcels'}
-                          </span>
-                        )}
-                      </span>
-                      <ChevronRight size={18} style={{ color: 'var(--color-primary)' }} />
-                    </button>
-                    <button
-                      className="selection-option-btn"
-                      style={{ opacity: 0.65, cursor: 'not-allowed' }}
-                      onClick={() => {}}
-                      disabled
-                    >
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-                        <img src="/globe-small.png" alt="Overseas" className="selection-option-img" />
-                        <span style={{ fontWeight: '600' }}>Overseas</span>
-                        <span className="coming-soon-tag">Coming Soon</span>
-                      </span>
-                      <ChevronRight size={18} style={{ color: 'var(--color-text-muted)' }} />
-                    </button>
-                  </div>
+                  <h2 className="map-selection-title">Select Region</h2>
+                  <p className="map-selection-subtitle">Choose a region to explore registered land parcels</p>
                 </div>
-              )}
+                <div className="selection-option-list">
+                  <button
+                    className="selection-option-btn"
+                    onClick={handleSelectIndia}
+                    autoFocus
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                      <img src="/india-flag.png" alt="India" className="selection-option-img" />
+                      <span style={{ fontWeight: '600' }}>India</span>
+                    </span>
+                    <ChevronRight size={18} style={{ color: 'var(--color-primary)' }} />
+                  </button>
+                  <button
+                    className="selection-option-btn"
+                    onClick={() => {}}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                      <img src="/globe-small.png" alt="Overseas" className="selection-option-img" />
+                      <span style={{ fontWeight: '600' }}>Overseas</span>
+                    </span>
+                    <ChevronRight size={18} style={{ color: 'var(--color-text-muted)' }} />
+                  </button>
+                </div>
+              </div>
+            )}
 
-              {currentStep === 'STATE' && (
-                <div className="map-selection-card">
-                  <div className="map-selection-header">
-                    <div className="map-selection-icon">
-                      <img src="/india.png" alt="India" />
-                    </div>
-                    <h2 className="map-selection-title">Select State</h2>
-                    <p className="map-selection-subtitle">India • Choose state to view district boundaries</p>
+            {currentStep === 'STATE' && (
+              <div className="map-selection-card">
+                <div className="map-selection-header">
+                  <div className="map-selection-icon">
+                    <img src="/india.png" alt="India" />
                   </div>
-                  <div className="selection-dropdown-wrapper">
-                    <label className="form-label" style={{ marginBottom: '0.5rem', fontWeight: '600' }}>State</label>
+                  <h2 className="map-selection-title">Select State</h2>
+                  <p className="map-selection-subtitle">India • Choose state to view district boundaries</p>
+                </div>
+                <div className="selection-dropdown-wrapper">
+                  <label className="form-label" style={{ marginBottom: '0.5rem', fontWeight: '600' }}>State</label>
+                  <select
+                    className="selection-select"
+                    value={selectedState}
+                    onChange={e => setSelectedState(e.target.value)}
+                  >
+                    <option value="Tamil Nadu">Tamil Nadu</option>
+                    {INDIA_STATES.filter(s => s !== 'Tamil Nadu').map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '0.85rem', fontWeight: '600' }}
+                  onClick={() => {
+                    if (selectedState === 'Tamil Nadu') {
+                      handleSelectTamilNadu()
+                    }
+                  }}
+                >
+                  Continue to State →
+                </button>
+              </div>
+            )}
+
+            {currentStep === 'DISTRICT' && (
+              <div className="map-selection-card">
+                <div className="map-selection-header">
+                  <div className="map-selection-icon">
+                    <img src="/tamil-nadu.png" alt="Tamil Nadu" />
+                  </div>
+                  <h2 className="map-selection-title">Select District</h2>
+                  <p className="map-selection-subtitle">Tamil Nadu • Choose district to view its taluks</p>
+                </div>
+                <div className="selection-dropdown-wrapper">
+                  <label className="form-label" style={{ marginBottom: '0.5rem', fontWeight: '600' }}>District</label>
+                  <select
+                    className="selection-select"
+                    value={selectedDistrict}
+                    onChange={e => setSelectedDistrict(e.target.value)}
+                  >
+                    <option value="Coimbatore">Coimbatore</option>
+                    {TN_DISTRICTS.filter(d => d !== 'Coimbatore').map(d => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '0.85rem', fontWeight: '600' }}
+                  onClick={() => {
+                    if (selectedDistrict === 'Coimbatore') {
+                      handleSelectCoimbatore()
+                    }
+                  }}
+                >
+                  Continue to Taluk →
+                </button>
+              </div>
+            )}
+
+            {currentStep === 'TALUK' && (
+              <div className="map-selection-card">
+                <div className="map-selection-header">
+                  <div className="map-selection-icon">
+                    <img src="/tamil-nadu.png" alt="Taluk" />
+                  </div>
+                  <h2 className="map-selection-title">Select Taluk</h2>
+                  <p className="map-selection-subtitle">{selectedDistrict} • Choose taluk to view villages</p>
+                </div>
+                <div className="selection-dropdown-wrapper">
+                  <label className="form-label" style={{ marginBottom: '0.5rem', fontWeight: '600' }}>Taluk</label>
+                  <select
+                    className="selection-select"
+                    value={selectedTaluk}
+                    onChange={e => setSelectedTaluk(e.target.value)}
+                  >
+                    {taluksList.map(t => (
+                      <option key={t.id || t.name} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  className="btn btn-primary"
+                  style={{ width: '100%', justifyContent: 'center', padding: '0.85rem', fontWeight: '600' }}
+                  onClick={() => handleSelectTaluk(selectedTaluk)}
+                  disabled={!selectedTaluk}
+                >
+                  Continue to Village →
+                </button>
+              </div>
+            )}
+
+            {currentStep === 'VILLAGE' && (
+              <div className="map-selection-card">
+                <div className="map-selection-header">
+                  <div className="map-selection-icon">
+                    <img src="/CoimbatoreMap.png" alt="Village" />
+                  </div>
+                  <h2 className="map-selection-title">Select Village</h2>
+                  <p className="map-selection-subtitle">{selectedTaluk || 'Taluk'} • Choose village to view land parcels</p>
+                </div>
+                <div className="selection-dropdown-wrapper">
+                  <label className="form-label" style={{ marginBottom: '0.5rem', fontWeight: '600' }}>Village</label>
+                  {villagesList.length === 0 ? (
+                    <p style={{ color: 'var(--color-text-muted)', margin: '0.5rem 0' }}>No villages registered in this taluk.</p>
+                  ) : (
                     <select
                       className="selection-select"
-                      value={selectedState}
-                      onChange={e => setSelectedState(e.target.value)}
+                      value={selectedVillage}
+                      onChange={e => setSelectedVillage(e.target.value)}
                     >
-                      <option value="Tamil Nadu">Tamil Nadu {tnPlotCount > 0 ? `(${tnPlotCount} parcels)` : ''}</option>
-                      {INDIA_STATES.filter(s => s !== 'Tamil Nadu').map(s => (
-                        <option key={s} value={s} disabled>{s} (Coming Soon)</option>
+                      {villagesList.map(v => (
+                        <option key={v.id || v.name} value={v.name}>{v.name}</option>
                       ))}
                     </select>
-                  </div>
+                  )}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.25rem' }}>
                   <button
                     className="btn btn-primary"
                     style={{ width: '100%', justifyContent: 'center', padding: '0.85rem', fontWeight: '600' }}
-                    onClick={() => {
-                      if (selectedState === 'Tamil Nadu') {
-                        handleSelectTamilNadu()
-                      }
-                    }}
+                    onClick={() => handleSelectVillage()}
+                    disabled={villagesList.length === 0 && !selectedVillage}
                   >
-                    Continue to State →
+                    Explore Village Parcels →
                   </button>
                 </div>
-              )}
-
-              {currentStep === 'DISTRICT' && (
-                <div className="map-selection-card">
-                  <div className="map-selection-header">
-                    <div className="map-selection-icon">
-                      <img src="/tamil-nadu.png" alt="Tamil Nadu" />
-                    </div>
-                    <h2 className="map-selection-title">Select District</h2>
-                    <p className="map-selection-subtitle">Tamil Nadu • Choose district to explore parcel registry</p>
-                  </div>
-                  <div className="selection-dropdown-wrapper">
-                    <label className="form-label" style={{ marginBottom: '0.5rem', fontWeight: '600' }}>District</label>
-                    <select
-                      className="selection-select"
-                      value={selectedDistrict}
-                      onChange={e => setSelectedDistrict(e.target.value)}
-                    >
-                      <option value="Coimbatore">Coimbatore {cbePlotCount > 0 ? `(${cbePlotCount} parcels)` : ''}</option>
-                      {TN_DISTRICTS.filter(d => d !== 'Coimbatore').map(d => (
-                        <option key={d} value={d} disabled>{d} (Coming Soon)</option>
-                      ))}
-                    </select>
-                  </div>
-                  <button
-                    className="btn btn-primary"
-                    style={{ width: '100%', justifyContent: 'center', padding: '0.85rem', fontWeight: '600' }}
-                    onClick={() => {
-                      if (selectedDistrict === 'Coimbatore') {
-                        handleSelectCoimbatore()
-                      }
-                    }}
-                  >
-                    Explore District Parcels →
-                  </button>
-                </div>
-              )}
-            </div>
-          )
-        })()}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* PDF Preview Modal */}
@@ -1695,6 +2787,13 @@ export default function MapPage() {
           margin-top: 2px;
           white-space: nowrap;
           display: none;
+        }
+        .area-tooltip {
+          background: rgba(0,0,0,0.7);
+          border: none;
+          color: #fff;
+          font-weight: bold;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
       `}</style>
     </div>

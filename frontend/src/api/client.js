@@ -1,12 +1,16 @@
 import axios from 'axios'
+import { getApiBaseUrl } from './config'
 
 const client = axios.create({
-  baseURL: '/api',
+  baseURL: getApiBaseUrl(),
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Attach JWT token to every request
+// Attach JWT token to every request and ensure dynamic baseURL
 client.interceptors.request.use((config) => {
+  if (!config.baseURL) {
+    config.baseURL = getApiBaseUrl()
+  }
   const token = localStorage.getItem('lpms_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`

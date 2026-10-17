@@ -1,4 +1,3 @@
-
 services:
   db:
     image: postgis/postgis:15-3.3
@@ -26,7 +25,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: quay.io/minio/minio:latest
+    image: cgr.dev/chainguard/minio:latest
     container_name: lpms_minio
     command: server /data --console-address ":9001"
     environment:
@@ -39,13 +38,13 @@ services:
       - minio_data:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD-SHELL", "mc ready local 2>/dev/null || mc alias set local http://127.0.0.1:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD >/dev/null; mc ready local"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   createbuckets:
-    image: quay.io/minio/mc:latest
+    image: cgr.dev/chainguard/minio:latest
     container_name: lpms_minio_init
     depends_on:
       minio:
@@ -66,17 +65,20 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://lpms_user:lpms_password@db:5432/lpms
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: lpms_minio_user
-      MINIO_SECRET_KEY: lpms_minio_password
-      MINIO_BUCKET: lpms-documents
-      MINIO_SECURE: "false"
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://lpms_user:lpms_password@db:5432/lpms}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-lpms_minio_user}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-lpms_minio_password}
+      MINIO_BUCKET: ${MINIO_BUCKET:-lpms-documents}
+      MINIO_SECURE: ${MINIO_SECURE:-false}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MAPBOX_ACCESS_TOKEN: ${MAPBOX_ACCESS_TOKEN:-}
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
+      - ./data:/data
     depends_on:
       db:
         condition: service_healthy
@@ -89,14 +91,8 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     container_name: lpms_frontend
-    environment:
-      CHOKIDAR_USEPOLLING: "true"
-      VITE_API_URL: http://localhost:8000
     ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - "${APP_PORT:-8080}:80"
     depends_on:
       - backend
     restart: unless-stopped

@@ -6,7 +6,9 @@ until python -c "
 import sys, os
 try:
     import psycopg2
-    conn = psycopg2.connect(os.environ.get('DATABASE_URL', 'postgresql://lpms_user:lpms_password@db:5432/lpms'))
+    url = os.environ.get('DATABASE_URL', 'postgresql://lpms_user:lpms_password@db:5432/lpms')
+    url = url.replace('+psycopg2', '')
+    conn = psycopg2.connect(url)
     conn.close()
     sys.exit(0)
 except Exception as e:
@@ -26,4 +28,4 @@ python seed.py
 echo "✅ Seeding complete."
 
 echo "🚀 Starting FastAPI server..."
-exec uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+exec uvicorn main:app --host 0.0.0.0 --port 8000

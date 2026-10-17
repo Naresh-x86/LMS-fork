@@ -5,6 +5,7 @@ import LoginPage from './pages/LoginPage'
 import NavigatorPage from './pages/NavigatorPage'
 import MapPage from './pages/MapPage'
 import ManagePage from './pages/ManagePage'
+import ServerWarmupOverlay from './components/ServerWarmupOverlay'
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth()
@@ -19,22 +20,23 @@ function AppRoutes() {
       <Route path="/" element={<HomePage />} />
       <Route path="/login" element={<LoginPage />} />
 
-      {/* Navigation drill-down: view or manage */}
-      <Route path="/navigate/:mode" element={<NavigatorPage />} />
-
       {/* Public map view */}
-      <Route path="/map" element={<MapPage />} />
-      <Route path="/map/:districtId" element={<MapPage />} />
+      <Route path="/map/*" element={<MapPage />} />
 
       {/* Admin manage route — protected */}
       <Route
-        path="/manage/:districtId"
+        path="/manage/*"
         element={
           <ProtectedRoute>
             <ManagePage />
           </ProtectedRoute>
         }
       />
+
+      {/* Backward compat for /navigate/:mode */}
+      <Route path="/navigate/view" element={<Navigate to="/map" replace />} />
+      <Route path="/navigate/manage" element={<Navigate to="/manage" replace />} />
+      <Route path="/navigate/:mode" element={<Navigate to="/manage" replace />} />
 
       {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -44,10 +46,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
-    </AuthProvider>
+    <ServerWarmupOverlay>
+      <AuthProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </AuthProvider>
+    </ServerWarmupOverlay>
   )
 }

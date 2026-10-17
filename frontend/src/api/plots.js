@@ -1,7 +1,8 @@
 import client from './client'
+import { resolveBackendUrl } from './config'
 
-export async function getPlots(districtId) {
-  const res = await client.get('/plots', { params: { district_id: districtId } })
+export async function getPlots(geoNodeId) {
+  const res = await client.get('/plots', { params: { geo_node_id: geoNodeId } })
   return res.data
 }
 
@@ -19,12 +20,30 @@ export async function extractKml(file) {
   return data
 }
 
-export async function createPlot(formData) {
+export async function createPlot(formData, onUploadProgress) {
   // formData must be a FormData object (multipart)
   const res = await client.post('/plots', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: onUploadProgress
   })
   return res.data
+}
+
+export async function updatePlot(plotId, formData, onUploadProgress) {
+  // formData must be a FormData object (multipart)
+  const res = await client.put(`/plots/${plotId}`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    onUploadProgress: onUploadProgress,
+  })
+  return res.data
+}
+
+export async function getPlotKmlUrl(plotId) {
+  const { data } = await client.get(`/plots/${plotId}/kml-url`)
+  if (data?.url) {
+    data.url = resolveBackendUrl(data.url)
+  }
+  return data
 }
 
 export async function deletePlot(plotId) {
